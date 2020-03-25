@@ -1,0 +1,134 @@
+---
+- name: install prerequisites for installation
+  apt:
+    name:
+    - apt-transport-https
+  tags:
+  - jitsi
+
+- name: download gpg key
+  get_url:
+    url: https://download.jitsi.org/jitsi-key.gpg.key
+    dest: /root/jitsi-gpgkey
+  tags:
+  - jitsi
+
+- name: add gpg key to apt
+  command:
+  args:
+    argv:
+    - apt-key
+    - add
+    - /root/jitsi-gpgkey
+  tags:
+  - jitsi
+
+- name: add repository
+  template:
+    src: download.jitsi.org
+    dest: /etc/apt/sources.list.d/download.jitsi.org.list
+    owner: root
+    group: root
+    mode: u=rw,go=r
+  tags:
+  - jitsi
+  register: jitsi_repo
+
+- name: configure jitsi hostname
+  debconf:
+    name: "{{ item.package }}"
+    question: "{{ item.prefix }}/jvb-hostname"
+    value: "{{ jitsi_hostname }}"
+    vtype: string
+  loop:
+  - package: jitsi-videobridge
+    prefix: jitsi-videobridge
+  - package: jitsi-meet-prosody
+    prefix: jitsi-videobridge
+  - package: jitsi-meet-prosody
+    prefix: jitsi-meet-prosody
+  tags:
+  - jitsi
+
+- name: install jitsi-meet
+  apt:
+    name:
+    - jitsi-meet
+    update_cache: "{{ (jitsi_repo is changed) | ternary('yes', 'no') }}"
+  register: jitsi_meet_package
+  tags:
+  - jitsi
+
+- name: do a fun dance to ensure that nginx gets port 443
+  when: jitsi_meet_package is changed
+  tags:
+  - jitsi
+  block:
+  - name: stop nginx
+    service:
+      name: nginx
+      state: stopped
+
+  - name: stop videobridge
+    service:
+      name: jitsi-videobridge
+      state: stopped
+
+  - name: start nginx
+    service:
+      name: nginx
+      state: started
+
+  - name: start videobridge
+    service:
+      name: jitsi-videobridge
+      state: started
+
+- name: configure nft firewall
+  template:
+    src: nft.conf
+    dest: /etc/nft.d/50-jitsi.conf
+    owner: root
+    group: root
+    mode: u=rw,go=r
+  when: "nft | default(False)"
+  tags:
+  - nft
+  - jitsi
+  notify:
+  - reload nft
+
+# FIXME: this cannot work because the nginx config is incorrect.
+# The following needs to be added manually to the nginx config:
+#
+# location ~ ^/\.well-known/.+$ {
+#     try_files $uri @root_path;
+# }
+- name: manage certificates with certbot
+  when: jitsi_certbot
+  tags:
+  - jitsi
+
+  block:
+  - name: install certbot
+    apt:
+      name:
+      - certbot
+      state: present
+
+  - name: create initial certificate
+    command:
+    args:
+      argv:
+      - certbot
+      - certonly
+      - "--agree-tos"
+      - "-m"
+      - "{{ jitsi_certbot_email }}"
+      - "-d"
+      - "{{ jitsi_hostname }}"
+      - "--webroot"
+      - "--webroot-path"
+      - "/usr/share/jitsi-meet"
+
+# TODO: add renew hooks to certbot which reload nginx

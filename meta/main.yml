@@ -1,0 +1,4 @@
+---
+dependencies:
+  - role: nft
+    when: "nft | default(False)"
